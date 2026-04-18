@@ -35,6 +35,12 @@ Click below to deploy directly to **Vercel**:
 
 After deploying to Vercel (or running locally), you can hit your API via simple HTTP requests:
 
+**Web Panel**
+- Open `/` in browser.
+- Enter `uid` and optional `server_name`.
+- Set `Auto Repeat Count` (1 to 20).
+- Click **Start Auto Like** and get JSON result on page.
+
 **GET** `/like`
 
 **Query Parameters:**
@@ -45,6 +51,34 @@ After deploying to Vercel (or running locally), you can hit your API via simple 
 ```bash
 https://your-domain.com/like?uid=123456789
 ```
+
+**GET** `/auto-like`
+
+### Auto Like Example:
+```bash
+https://your-domain.com/auto-like?uid=123456789&server_name=bd&count=5
+```
+
+Optional:
+- Add `target_likes` in `/like` or `/auto-like` (default: `200`) for Telegram report formatting.
+
+### Health Endpoint:
+```bash
+https://your-domain.com/health
+```
+
+### Telegram Group Notification (Optional)
+If you want like results to auto-send on Telegram after each `/like` or `/auto-like` run, set:
+
+```bash
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_group_chat_id
+DAILY_API_LIMIT=80
+PLAN_TOTAL_DAYS=30
+PLAN_DAYS_REMAINING=29
+```
+
+> Note: Add your bot in the group and make it admin if required.
 
 ### Example Response:
 ```json

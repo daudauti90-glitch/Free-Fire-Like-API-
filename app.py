@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 import asyncio
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -7,6 +7,7 @@ import binascii
 import aiohttp
 import requests
 import json
+import os
 import like_pb2
 import like_count_pb2
 import uid_generator_pb2
@@ -14,6 +15,70 @@ from google.protobuf.message import DecodeError
 import base64
 
 app = Flask(__name__)
+
+WEB_UI_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Free Fire Like Tool</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+        .container { max-width: 560px; margin: 64px auto; padding: 24px; background: #111827; border-radius: 14px; }
+        h1 { margin-top: 0; font-size: 1.5rem; }
+        p { color: #94a3b8; }
+        label { display: block; margin-top: 12px; margin-bottom: 6px; }
+        input { width: 100%; padding: 10px; border: 1px solid #334155; border-radius: 10px; background: #0b1220; color: #e2e8f0; }
+        button { margin-top: 16px; width: 100%; padding: 12px; background: #2563eb; color: #fff; border: 0; border-radius: 10px; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+        #result { margin-top: 16px; white-space: pre-wrap; background: #0b1220; padding: 12px; border-radius: 10px; min-height: 48px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Free Fire Like API Web Panel</h1>
+        <p>UID dalo, optional server choose karo, aur direct result pao.</p>
+        <label for="uid">UID</label>
+        <input id="uid" type="text" placeholder="e.g. 123456789" />
+        <label for="server_name">Server (optional)</label>
+        <input id="server_name" type="text" placeholder="e.g. IND, BD, BR" />
+        <label for="repeat_count">Auto Repeat Count</label>
+        <input id="repeat_count" type="number" min="1" max="20" value="3" />
+        <button onclick="submitLike()">Start Auto Like</button>
+        <div id="result">Result yahan dikhega...</div>
+    </div>
+
+    <script>
+        async function submitLike() {
+            const uid = document.getElementById('uid').value.trim();
+            const server = document.getElementById('server_name').value.trim();
+            const resultBox = document.getElementById('result');
+
+            if (!uid) {
+                resultBox.textContent = 'UID required hai.';
+                return;
+            }
+
+            try {
+                const repeatCount = parseInt(document.getElementById('repeat_count').value || '1', 10);
+                let url = `/auto-like?uid=${encodeURIComponent(uid)}&count=${encodeURIComponent(repeatCount)}`;
+                if (server) {
+                    url += `&server_name=${encodeURIComponent(server)}`;
+                }
+
+                resultBox.textContent = 'Processing...';
+                const res = await fetch(url);
+                const data = await res.json();
+                resultBox.textContent = JSON.stringify(data, null, 2);
+            } catch (err) {
+                resultBox.textContent = `Request failed: ${err}`;
+            }
+        }
+    </script>
+</body>
+</html>
+"""
 
 def load_tokens():
     try:
@@ -23,6 +88,53 @@ def load_tokens():
     except Exception as e:
         app.logger.error(f"Error loading tokens: {e}")
         return None
+
+def send_telegram_message(message_text):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    if not bot_token or not chat_id:
+        app.logger.info("Telegram config missing, skipping Telegram notification.")
+        return False
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message_text
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            app.logger.error(f"Telegram send failed: {response.status_code} - {response.text}")
+            return False
+        return True
+    except Exception as e:
+        app.logger.error(f"Error while sending Telegram message: {e}")
+        return False
+
+def build_telegram_message(player_name, player_uid, region, target_likes, given_likes, before_like, after_like, used_calls):
+    daily_limit = int(os.getenv("DAILY_API_LIMIT", "80"))
+    total_days = int(os.getenv("PLAN_TOTAL_DAYS", "30"))
+    days_remaining = int(os.getenv("PLAN_DAYS_REMAINING", "29"))
+    remain_limit = max(daily_limit - used_calls, 0)
+    failed_likes = max(target_likes - given_likes, 0)
+
+    return (
+        "🎮 FREE FIRE AUTO-LIKE SUCCESS\n"
+        "────────────────────\n"
+        f"🎯 Player: {player_name}\n"
+        f"🆔 UID: {player_uid}\n"
+        f"🌍 Region: {region}\n\n"
+        f"🎯 Target Likes: {target_likes}\n"
+        f"✅ Given by API: {given_likes}\n"
+        f"📉 Failed to Send: {failed_likes}\n\n"
+        f"📊 Before Like: {before_like}\n"
+        f"📈 After Like: {after_like}\n\n"
+        f"🔄 Remain API Limit: {remain_limit}/{daily_limit}\n"
+        "────────────────────\n"
+        f"Total Days: {total_days}\n"
+        f"Days Remaining: {days_remaining}"
+    )
 
 def encrypt_message(plaintext):
     try:
@@ -157,6 +269,11 @@ def decode_protobuf(binary):
 
 @app.route('/', methods=['GET'])
 def index():
+    return render_template_string(WEB_UI_TEMPLATE)
+
+
+@app.route('/health', methods=['GET'])
+def health():
     return jsonify({
         "credit": "https://t.me/paglu_dev",
         "message": "Welcome to the Free Fire Like API",
@@ -173,13 +290,63 @@ def handle_requests():
         return jsonify({"error": "UID is required"}), 400
 
     try:
+        target_likes = int(request.args.get("target_likes", 200))
+        return process_like_request(uid, request.args.get("server_name", ""), target_likes=target_likes, used_calls=1)
+    except Exception as e:
+        app.logger.error(f"Error processing request: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/auto-like', methods=['GET'])
+def auto_like_requests():
+    uid = request.args.get("uid")
+    if not uid:
+        return jsonify({"error": "UID is required"}), 400
+
+    server_name_input = request.args.get("server_name", "")
+    try:
+        target_likes = int(request.args.get("target_likes", 200))
+    except ValueError:
+        return jsonify({"error": "target_likes must be a number"}), 400
+    try:
+        count = int(request.args.get("count", 3))
+    except ValueError:
+        return jsonify({"error": "count must be a number between 1 and 20"}), 400
+
+    if count < 1 or count > 20:
+        return jsonify({"error": "count must be between 1 and 20"}), 400
+
+    run_results = []
+    total_likes = 0
+    for i in range(count):
+        result = process_like_request(uid, server_name_input, target_likes=target_likes, used_calls=i + 1)
+        payload = result.get_json(silent=True) if hasattr(result, "get_json") else None
+        if payload is None:
+            payload = {"error": "Unexpected response format"}
+        run_results.append({
+            "run": i + 1,
+            "response": payload
+        })
+        if isinstance(payload, dict):
+            total_likes += int(payload.get("LikesGivenByAPI", 0) or 0)
+
+    return jsonify({
+        "UID": int(uid),
+        "RepeatCount": count,
+        "TotalLikesGiven": total_likes,
+        "runs": run_results
+    })
+
+
+def process_like_request(uid, server_name_input="", target_likes=200, used_calls=1):
+    try:
         tokens = load_tokens()
         if tokens is None or not tokens:
-            return jsonify({"error": "Failed to load tokens."}), 500
+            return jsonify({"error": "Failed to load tokens."})
         token = tokens[0]['token']
         
         # Extract server_name (lock_region) from token if not provided
-        server_name = request.args.get("server_name", "").upper()
+        server_name = server_name_input.upper()
         if not server_name:
             try:
                 payload = token.split('.')[1]
@@ -191,16 +358,16 @@ def handle_requests():
                 app.logger.error(f"Error decoding token payload: {e}")
         
         if not server_name:
-            return jsonify({"error": "server_name could not be determined from token or input"}), 400
+            return jsonify({"error": "server_name could not be determined from token or input"})
         
         encrypted_uid = enc(uid)
         if encrypted_uid is None:
-            return jsonify({"error": "Encryption of UID failed."}), 500
+            return jsonify({"error": "Encryption of UID failed."})
 
         # Get before likes count
         before = make_request(encrypted_uid, server_name, token)
         if before is None:
-            return jsonify({"error": "Failed to retrieve player info. There are no valid token found! please update tokens.json with valid tokens"}), 500
+            return jsonify({"error": "Failed to retrieve player info. There are no valid token found! please update tokens.json with valid tokens"})
         
         data_before = json.loads(MessageToJson(before))
         before_like = int(data_before.get('AccountInfo', {}).get('Likes', 0) or 0)
@@ -221,7 +388,7 @@ def handle_requests():
         # Get after likes count
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
-            return jsonify({"error": "Failed to retrieve player info after likes."}), 500
+            return jsonify({"error": "Failed to retrieve player info after likes."})
         
         data_after = json.loads(MessageToJson(after))
         account_info = data_after.get('AccountInfo', {})
@@ -230,8 +397,7 @@ def handle_requests():
         player_name = str(account_info.get('PlayerNickname', ''))
         
         like_given = after_like - before_like
-        
-        return jsonify({
+        response_payload = {
             "credit": "https://t.me/paglu_dev",
             "LikesGivenByAPI": like_given,
             "LikesafterCommand": after_like,
@@ -240,10 +406,24 @@ def handle_requests():
             "Region": server_name,
             "UID": player_uid,
             "status": 1 if like_given > 0 else 2
-        })
+        }
+
+        telegram_message = build_telegram_message(
+            player_name=player_name,
+            player_uid=player_uid,
+            region=server_name,
+            target_likes=target_likes,
+            given_likes=like_given,
+            before_like=before_like,
+            after_like=after_like,
+            used_calls=used_calls
+        )
+        send_telegram_message(telegram_message)
+
+        return jsonify(response_payload)
     except Exception as e:
-        app.logger.error(f"Error processing request: {e}")
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Error in process_like_request: {e}")
+        return jsonify({"error": str(e)})
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
