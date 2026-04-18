@@ -1,11 +1,14 @@
 import requests
 import json
+import os
 
 UIDPASS_FILE = "uidpass.json"
 TOKEN_FILE = "tokens.json"
 API_URL = "https://xtytdtyj-jwt.up.railway.app/token"
 
 def read_uidpass():
+    if not os.path.exists(UIDPASS_FILE):
+        return []
     with open(UIDPASS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
